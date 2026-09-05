@@ -1,6 +1,8 @@
 import asyncio
+
 from fastapi import WebSocket
 from pydantic import BaseModel
+
 
 class DashboardBroadcaster:
     def __init__(self) -> None:
@@ -17,7 +19,7 @@ class DashboardBroadcaster:
             self._connections.discard(websocket)
 
     async def broadcast(self, message: BaseModel) -> None:
-        payload = message.model_dump(mode="json", by_alias =True)
+        payload = message.model_dump(mode="json", by_alias=True)
         async with self._lock:
             connections = tuple(self._connections)
 
@@ -26,7 +28,7 @@ class DashboardBroadcaster:
 
         results = await asyncio.gather(
             *(connection.send_json(payload) for connection in connections),
-            return_exceptions = True,
+            return_exceptions=True,
         )
         failed = [
             connection

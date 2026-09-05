@@ -8,6 +8,7 @@ from backend.schemas import CycleState, MLReading
 class CycleError(Exception):
     pass
 
+
 class CycleNotFoundError(CycleError):
     pass
 
@@ -79,7 +80,7 @@ class CycleManager:
 
             if cycle.readings and reading.t_sec <= cycle.readings[-1].t_sec:
                 raise CycleConflictError(
-                    f"Reading timestamps must be strictly increasing within a cycle."
+                    "Reading timestamps must be strictly increasing within a cycle."
                 )
 
             cycle.readings.append(reading)
@@ -110,7 +111,7 @@ class CycleManager:
                 raise InvalidCycleStateError(
                     f"Cycle {cycle_id!r} is not being verified."
                 )
-            cycle.verification_in_progress = False 
+            cycle.verification_in_progress = False
 
     def complete_cycle(self, line_id: str, cycle_id: str) -> None:
         with self._lock:

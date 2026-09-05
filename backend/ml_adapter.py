@@ -1,19 +1,22 @@
+"""Boundary between the backend and Najlaa's cycle prediction module."""
+
 from dataclasses import dataclass
 import importlib
 import math
 import sys
-from typing import Any, Callable
+from threading import Lock
+from typing import Any, Callable, Mapping
 
 from backend.config import PROJECT_ROOT
 from backend.schemas import MLReading, Verdict
 
 
 class PredictionUnavailableError(RuntimeError):
-    pass
+    """Raised when the predictor or its exported artifacts are unavailable."""
 
 
 class InvalidPredictionError(RuntimeError):
-    pass
+    """Raised when the predictor returns data outside the backend contract."""
 
 
 @dataclass(frozen=True)
@@ -28,11 +31,14 @@ class PredictionOutput:
 
 
 class PredictionService:
+    """Load the ML entry point lazily and normalize its result."""
+
     def __init__(self, use_stub: bool = False) -> None:
         self.use_stub = use_stub
-        self._predictor: Callable[[list[dict[str, float]]], dict[str, Any]] | None = None 
+        self._predictor: Callable[[list[dict[str, float]]], dict[str, Any]] | None = None
+        self._load_lock = Lock()
 
-def predict(self, readings: list[MLReading]) -> PredictionOutput:
+    def predict(self, readings: list[MLReading]) -> PredictionOutput:
         if self.use_stub:
             return PredictionOutput(
                 verdict=Verdict.PASS,
@@ -54,49 +60,62 @@ def predict(self, readings: list[MLReading]) -> PredictionOutput:
             ) from exc
         return self._normalize_result(raw_result)
 
-def _load_predictor(
+    def _load_predictor(
         self,
     ) -> Callable[[list[dict[str, float]]], dict[str, Any]]:
         if self._predictor is not None:
             return self._predictor
 
-        results_dir = PROJECT_ROOT / "results"
-        required_paths = (
-            results_dir / "cip_model.pkl",
-            results_dir / "cip_selected_features.json",
-            results_dir / "cip_report.json",
-        )
-        missing = [path.name for path in required_paths if not path.exists()]
-        if missing:
-            raise PredictionUnavailableError(
-                "Missing ML artifacts: " + ", ".join(sorted(missing))
-            )
+        with self._load_lock:
+            if self._predictor is not None:
+                return self._predictor
 
-        ml_dir = str(PROJECT_ROOT / "ML")
-        if ml_dir not in sys.path:
-            sys.path.insert(0, ml_dir)
-        try:
-            module = importlib.import_module("predict_cycle")
-            self._predictor = module.predict_cycle
-        except Exception as exc:
-            raise PredictionUnavailableError(
-                "Najlaa's predict_cycle function could not be loaded."
-            ) from exc
+            results_dir = PROJECT_ROOT / "results"
+            required_paths = (
+                results_dir / "cip_model.pkl",
+                results_dir / "cip_selected_features.json",
+                results_dir / "cip_report.json",
+            )
+            missing = [path.name for path in required_paths if not path.is_file()]
+            if missing:
+                raise PredictionUnavailableError(
+                    "Missing ML artifacts: " + ", ".join(sorted(missing))
+                )
+
+            ml_dir = str(PROJECT_ROOT / "ML")
+            added_to_path = ml_dir not in sys.path
+            if added_to_path:
+                sys.path.insert(0, ml_dir)
+            try:
+                module = importlib.import_module("predict_cycle")
+                predictor = getattr(module, "predict_cycle")
+                if not callable(predictor):
+                    raise TypeError("predict_cycle is not callable")
+                self._predictor = predictor
+            except Exception as exc:
+                raise PredictionUnavailableError(
+                    "Najlaa's predict_cycle function could not be loaded."
+                ) from exc
+            finally:
+                if added_to_path:
+                    try:
+                        sys.path.remove(ml_dir)
+                    except ValueError:
+                        pass
+
         return self._predictor
 
-@staticmethod
-def _normalize_result(raw_result: dict[str, Any]) -> PredictionOutput:
+    @staticmethod
+    def _normalize_result(raw_result: Mapping[str, Any]) -> PredictionOutput:
         try:
             verdict = Verdict(raw_result["verdict"])
             confidence = float(raw_result["confidence"])
-            top_features = {
-                str(name): float(value)
-                for name, value in raw_result.get("top_features", {}).items()
-            }
-            all_features = {
-                str(name): float(value)
-                for name, value in raw_result.get("all_features", top_features).items()
-            }
+            top_features = PredictionService._numeric_mapping(
+                raw_result.get("top_features", {}), "top_features"
+            )
+            all_features = PredictionService._numeric_mapping(
+                raw_result.get("all_features", {}), "all_features"
+            )
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise InvalidPredictionError(
                 "The ML predictor returned an invalid result."
@@ -126,8 +145,14 @@ def _normalize_result(raw_result: dict[str, Any]) -> PredictionOutput:
             time_above_threshold=time_above_threshold,
         )
 
-@staticmethod
-def _optional_float(value: Any) -> float | None:
+    @staticmethod
+    def _numeric_mapping(value: Any, field_name: str) -> dict[str, float]:
+        if not isinstance(value, Mapping):
+            raise InvalidPredictionError(f"{field_name} must be an object.")
+        return {str(name): float(number) for name, number in value.items()}
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
         if value is None:
             return None
         try:
