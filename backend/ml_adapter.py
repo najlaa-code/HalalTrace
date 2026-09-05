@@ -84,7 +84,7 @@ def _load_predictor(
             ) from exc
         return self._predictor
 
-    @staticmethod
+@staticmethod
 def _normalize_result(raw_result: dict[str, Any]) -> PredictionOutput:
         try:
             verdict = Verdict(raw_result["verdict"])
@@ -126,7 +126,7 @@ def _normalize_result(raw_result: dict[str, Any]) -> PredictionOutput:
             time_above_threshold=time_above_threshold,
         )
 
-    @staticmethod
+@staticmethod
 def _optional_float(value: Any) -> float | None:
         if value is None:
             return None

@@ -1,5 +1,3 @@
-"""In-memory lifecycle and reading buffers for active cleaning cycles."""
-
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
@@ -8,8 +6,7 @@ from backend.schemas import CycleState, MLReading
 
 
 class CycleError(Exception):
-    """Base class for expected cycle-lifecycle errors."""
-
+    pass
 
 class CycleNotFoundError(CycleError):
     pass
@@ -34,8 +31,6 @@ class ActiveCycle:
 
 
 class CycleManager:
-    """Own active cycle state; completed receipts belong to SQLite."""
-
     def __init__(self) -> None:
         self._cycles: dict[tuple[str, str], ActiveCycle] = {}
         self._active_cycle_by_line: dict[str, str] = {}
@@ -84,7 +79,7 @@ class CycleManager:
 
             if cycle.readings and reading.t_sec <= cycle.readings[-1].t_sec:
                 raise CycleConflictError(
-                    "Reading timestamps must be strictly increasing within a cycle."
+                    f"Reading timestamps must be strictly increasing within a cycle."
                 )
 
             cycle.readings.append(reading)
@@ -109,14 +104,13 @@ class CycleManager:
             return cycle
 
     def verification_failed(self, line_id: str, cycle_id: str) -> None:
-        """Release a failed verification attempt while retaining its readings."""
         with self._lock:
             cycle = self._get_cycle(line_id, cycle_id)
             if cycle.state != CycleState.VERIFYING:
                 raise InvalidCycleStateError(
                     f"Cycle {cycle_id!r} is not being verified."
                 )
-            cycle.verification_in_progress = False
+            cycle.verification_in_progress = False 
 
     def complete_cycle(self, line_id: str, cycle_id: str) -> None:
         with self._lock:

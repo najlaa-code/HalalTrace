@@ -4,7 +4,6 @@ from datetime import datetime
 from enum import Enum
 import math
 from typing import Annotated, Literal
-
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 
@@ -53,8 +52,6 @@ class ReadingRequest(StrictSchema):
 
 
 class MLReading(StrictSchema):
-    """A reading in the exact shape accepted by Najlaa's predictor."""
-
     t_sec: float = Field(ge=0, strict=True)
     turbidity_ntu: float = Field(ge=0, strict=True)
     temp_c: float = Field(strict=True)
@@ -81,8 +78,6 @@ class Verdict(str, Enum):
 
 
 class DashboardSchema(StrictSchema):
-    """Base for dashboard messages using the frozen camel-case contract."""
-
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
