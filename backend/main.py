@@ -1,5 +1,3 @@
-"""FastAPI entry point for the cycle-based HalalTrace backend."""
-
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Callable
