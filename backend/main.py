@@ -109,8 +109,8 @@ def create_app(
 
     @api.get("/health", response_model=HealthResponse, tags=["system"])
     async def health() -> HealthResponse:
-        model_mode = "development_stub" if app_settings.use_ml_stub else "real"
-        return HealthResponse(status="ok", model_mode=model_mode)
+        mode = "development_stub" if app_settings.use_ml_stub else "real"
+        return HealthResponse(status="ok", model_mode=mode)
 
     @api.post(
         "/api/line/{line_id}/cycle/start",
