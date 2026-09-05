@@ -28,9 +28,10 @@ class PredictionOutput:
 
 
 class PredictionService:
-def __init__(self, use_stub: bool = False) -> None:
+    def __init__(self, use_stub: bool = False) -> None:
         self.use_stub = use_stub
-        self._predictor: Callable[[list[dict[str, float]]], dict[str, Any]] | None = None # type: ignore
+        self._predictor: Callable[[list[dict[str, float]]], dict[str, Any]] | None = None 
+
 def predict(self, readings: list[MLReading]) -> PredictionOutput:
         if self.use_stub:
             return PredictionOutput(
