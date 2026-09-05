@@ -4,6 +4,9 @@ from fastapi import WebSocket
 from pydantic import BaseModel
 
 
+SEND_TIMEOUT_SECONDS = 2.0
+
+
 class DashboardBroadcaster:
     def __init__(self) -> None:
         self._connections: set[WebSocket] = set()
@@ -27,7 +30,13 @@ class DashboardBroadcaster:
             return
 
         results = await asyncio.gather(
-            *(connection.send_json(payload) for connection in connections),
+            *(
+                asyncio.wait_for(
+                    connection.send_json(payload),
+                    timeout=SEND_TIMEOUT_SECONDS,
+                )
+                for connection in connections
+            ),
             return_exceptions=True,
         )
         failed = [
