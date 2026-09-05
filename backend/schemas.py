@@ -1,5 +1,3 @@
-"""Validated HTTP and WebSocket message shapes for HalalTrace."""
-
 from datetime import datetime
 from enum import Enum
 import math
@@ -19,8 +17,6 @@ Identifier = Annotated[
 
 
 class StrictSchema(BaseModel):
-    """Base schema that rejects undocumented request fields."""
-
     model_config = ConfigDict(extra="forbid")
 
 

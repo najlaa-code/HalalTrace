@@ -1,8 +1,3 @@
-"""
-FastAPI entry point for the cycle-based HalalTrace backend, should be
-good now?? Insh'Allah
-"""
-
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Callable
@@ -45,15 +40,18 @@ from backend.schemas import (
 
 Predictor = Callable[[list[MLReading]], PredictionOutput]
 
+
 def _cycle_http_error(exc: CycleError) -> HTTPException:
     if isinstance(exc, CycleNotFoundError):
-        return HTTPException(status_code=404, detail=str(exc))
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
     if isinstance(exc, (CycleConflictError, InvalidCycleStateError)):
-        return HTTPException(status_code=409, detail=str(exc))
-    
-    #This should genuinely only happen if a new CycleError subclass is added
-    return HTTPException(status_code=500, detail="Unexpected cycle state error.")
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Unexpected cycle state error.",
+    )
 
 
 def _verdict_message(receipt: AuditReceipt) -> VerdictMessage:
@@ -82,8 +80,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        #Delay this until startup so importing the mod uelr doesnt create files
-        db.initialize()
+        await run_in_threadpool(db.initialize)
         yield
 
     api = FastAPI(
@@ -101,7 +98,7 @@ def create_app(
         allow_headers=["Content-Type"],
     )
 
-    api.state.settings = api
+    api.state.settings = app_settings
     api.state.database = db
     api.state.cycle_manager = cycles
     api.state.predictor = predict
@@ -121,7 +118,7 @@ def create_app(
     async def start_cycle(
         line_id: Identifier, request: CycleStartRequest
     ) -> CycleStateMessage:
-        if db.get_receipt(request.cycle_id) is not None:
+        if await run_in_threadpool(db.get_receipt, request.cycle_id) is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Cycle id {request.cycle_id!r} already has an audit receipt.",
@@ -176,7 +173,7 @@ def create_app(
     async def end_cycle(
         line_id: Identifier, request: CycleEndRequest
     ) -> VerdictMessage:
-        existing_receipt = db.get_receipt(request.cycle_id)
+        existing_receipt = await run_in_threadpool(db.get_receipt, request.cycle_id)
         if existing_receipt is not None:
             if existing_receipt.line_id != line_id:
                 raise HTTPException(
@@ -230,9 +227,11 @@ def create_app(
             model_mode=("development_stub" if prediction.development_stub else "real"),
         )
         try:
-            db.insert_receipt(receipt)
+            await run_in_threadpool(db.insert_receipt, receipt)
         except DuplicateReceiptError:
-            stored_receipt = db.get_receipt(request.cycle_id)
+            stored_receipt = await run_in_threadpool(
+                db.get_receipt, request.cycle_id
+            )
             if stored_receipt is None:
                 cycles.verification_failed(line_id, request.cycle_id)
                 raise HTTPException(
@@ -277,13 +276,13 @@ def create_app(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[AuditSummary]:
-        return db.list_receipts(limit=limit, offset=offset)
+        return await run_in_threadpool(db.list_receipts, limit, offset)
 
     @api.get(
         "/api/cycle/{cycle_id}", response_model=AuditReceipt, tags=["audit"]
     )
     async def get_cycle(cycle_id: Identifier) -> AuditReceipt:
-        receipt = db.get_receipt(cycle_id)
+        receipt = await run_in_threadpool(db.get_receipt, cycle_id)
         if receipt is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

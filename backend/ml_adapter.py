@@ -1,8 +1,8 @@
-"""Boundary between the backend and Najlaa's cycle prediction module."""
-
-from dataclasses import dataclass
-import importlib
+from dataclasses import dataclass, replace
+import importlib.util
+import json
 import math
+from pathlib import Path
 import sys
 from threading import Lock
 from typing import Any, Callable, Mapping
@@ -12,11 +12,11 @@ from backend.schemas import MLReading, Verdict
 
 
 class PredictionUnavailableError(RuntimeError):
-    """Raised when the predictor or its exported artifacts are unavailable."""
+    pass
 
 
 class InvalidPredictionError(RuntimeError):
-    """Raised when the predictor returns data outside the backend contract."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -31,8 +31,6 @@ class PredictionOutput:
 
 
 class PredictionService:
-    """Load the ML entry point lazily and normalize its result."""
-
     def __init__(self, use_stub: bool = False) -> None:
         self.use_stub = use_stub
         self._predictor: Callable[[list[dict[str, float]]], dict[str, Any]] | None = None
@@ -58,7 +56,13 @@ class PredictionService:
             raise PredictionUnavailableError(
                 "The cycle could not be evaluated by the ML predictor."
             ) from exc
-        return self._normalize_result(raw_result)
+        result = self._normalize_result(raw_result)
+        if result.peak_turbidity is None and readings:
+            result = replace(
+                result,
+                peak_turbidity=max(reading.turbidity_ntu for reading in readings),
+            )
+        return result
 
     def _load_predictor(
         self,
@@ -82,12 +86,26 @@ class PredictionService:
                     "Missing ML artifacts: " + ", ".join(sorted(missing))
                 )
 
+            self._validate_artifacts(results_dir)
+
             ml_dir = str(PROJECT_ROOT / "ML")
+            module_path = PROJECT_ROOT / "ML" / "predict_cycle.py"
+            if not module_path.is_file():
+                raise PredictionUnavailableError(
+                    "Najlaa's predict_cycle module is missing."
+                )
+
             added_to_path = ml_dir not in sys.path
             if added_to_path:
                 sys.path.insert(0, ml_dir)
+
+            module_name = "_halaltrace_predict_cycle"
             try:
-                module = importlib.import_module("predict_cycle")
+                spec = importlib.util.spec_from_file_location(module_name, module_path)
+                if spec is None or spec.loader is None:
+                    raise ImportError("Could not create a predictor module spec.")
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
                 predictor = getattr(module, "predict_cycle")
                 if not callable(predictor):
                     raise TypeError("predict_cycle is not callable")
@@ -104,6 +122,55 @@ class PredictionService:
                         pass
 
         return self._predictor
+
+    @staticmethod
+    def _validate_artifacts(results_dir: Path) -> None:
+        try:
+            selected_features = json.loads(
+                (results_dir / "cip_selected_features.json").read_text()
+            )
+            report = json.loads((results_dir / "cip_report.json").read_text())
+            best_model = report["best_model"]
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PredictionUnavailableError(
+                "The ML artifact metadata is invalid."
+            ) from exc
+
+        if not isinstance(selected_features, list) or not selected_features:
+            raise PredictionUnavailableError(
+                "The selected-feature artifact must contain a non-empty list."
+            )
+        if not all(isinstance(name, str) and name for name in selected_features):
+            raise PredictionUnavailableError(
+                "The selected-feature artifact contains invalid feature names."
+            )
+
+        supported_models = {
+            "decision_tree",
+            "logistic_regression",
+            "svm_linear",
+            "svm_rbf",
+        }
+        if best_model not in supported_models:
+            raise PredictionUnavailableError(
+                "The ML report names an unsupported model."
+            )
+
+        report_features = report.get("features")
+        if report_features is not None and report_features != selected_features:
+            raise PredictionUnavailableError(
+                "The ML report and selected-feature artifact do not match."
+            )
+
+        scaler_path = results_dir / "cip_scaler.pkl"
+        if best_model == "decision_tree" and scaler_path.exists():
+            raise PredictionUnavailableError(
+                "A decision-tree artifact must not include a scaler."
+            )
+        if best_model != "decision_tree" and not scaler_path.is_file():
+            raise PredictionUnavailableError(
+                "The selected ML model requires cip_scaler.pkl."
+            )
 
     @staticmethod
     def _normalize_result(raw_result: Mapping[str, Any]) -> PredictionOutput:
