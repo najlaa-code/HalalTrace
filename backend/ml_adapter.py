@@ -17,32 +17,30 @@ class InvalidPredictionError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class MLAdapter:
-    predict: Callable[[list[MLReading]], tuple[Verdict, float, dict[str, Any]]]
+class PredictionOutput:
+    verdict: Verdict
+    confidence: float
+    top_features: dict[str, float]
+    all_features: dict[str, float]
+    peak_turbidity: float | None
+    time_above_threshold: float | None
+    development_stub: bool = False
 
-    @classmethod
-    def load(cls) -> "MLAdapter":
-        if "ml_adapter" in sys.modules:
-            importlib.reload(sys.modules["ml_adapter"])
-        ml_module = importlib.import_module("ml_adapter")
-        return cls(predict=ml_module.predict)
-
-    async def predict_async(self, readings: list[MLReading]) -> tuple[Verdict, float, dict[str, Any]]:
-        loop = importlib.import_module("asyncio").get_running_loop()
-        return await loop.run_in_executor(None, self.predict, readings)
 
 class PredictionService:
-    def __init__(self, use_stub: bool = False) -> None:
+def __init__(self, use_stub: bool = False) -> None:
         self.use_stub = use_stub
-        self._predictor: Callable[[list[dict[str, float]]], dict[str, Any]] | None = None
-
-    def predict(self, readings: list[MLReading]) -> "PredictionOutput":
+        self._predictor: Callable[[list[dict[str, float]]], dict[str, Any]] | None = None # type: ignore
+def predict(self, readings: list[MLReading]) -> PredictionOutput:
         if self.use_stub:
             return PredictionOutput(
                 verdict=Verdict.PASS,
-                confidence=1.0,
+                confidence=0.5,
                 top_features={},
                 all_features={},
+                peak_turbidity=None,
+                time_above_threshold=None,
+                development_stub=True,
             )
 
         predictor = self._load_predictor()
@@ -55,7 +53,23 @@ class PredictionService:
             ) from exc
         return self._normalize_result(raw_result)
 
-    def _load_predictor(self) -> Callable[[list[dict[str, float]]], dict[str, Any]]:
+def _load_predictor(
+        self,
+    ) -> Callable[[list[dict[str, float]]], dict[str, Any]]:
+        if self._predictor is not None:
+            return self._predictor
+
+        results_dir = PROJECT_ROOT / "results"
+        required_paths = (
+            results_dir / "cip_model.pkl",
+            results_dir / "cip_selected_features.json",
+            results_dir / "cip_report.json",
+        )
+        missing = [path.name for path in required_paths if not path.exists()]
+        if missing:
+            raise PredictionUnavailableError(
+                "Missing ML artifacts: " + ", ".join(sorted(missing))
+            )
 
         ml_dir = str(PROJECT_ROOT / "ML")
         if ml_dir not in sys.path:
@@ -70,7 +84,7 @@ class PredictionService:
         return self._predictor
 
     @staticmethod
-    def _normalize_result(raw_result: dict[str, Any]) -> PredictionOutput:
+def _normalize_result(raw_result: dict[str, Any]) -> PredictionOutput:
         try:
             verdict = Verdict(raw_result["verdict"])
             confidence = float(raw_result["confidence"])
@@ -92,9 +106,27 @@ class PredictionService:
             raise InvalidPredictionError(
                 "The ML predictor returned non-finite values or invalid confidence."
             )
-        
+
+        peak_turbidity = PredictionService._optional_float(
+            raw_result.get("peak_turbidity", all_features.get("turbidity_peak"))
+        )
+        time_above_threshold = PredictionService._optional_float(
+            raw_result.get(
+                "time_above_threshold",
+                all_features.get("temp_threshold_duration"),
+            )
+        )
+        return PredictionOutput(
+            verdict=verdict,
+            confidence=confidence,
+            top_features=top_features,
+            all_features=all_features,
+            peak_turbidity=peak_turbidity,
+            time_above_threshold=time_above_threshold,
+        )
+
     @staticmethod
-    def _optional_float(value: Any) -> float | None:
+def _optional_float(value: Any) -> float | None:
         if value is None:
             return None
         try:
