@@ -132,11 +132,6 @@ class AuditDatabase:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
-        defaults = connection.execute("PRAGMA database_list").fetchall()
-        if not any(row["file"] == str(self.path) for row in defaults):
-            sqlite3.register_adapter(Path, str)
-            sqlite3.register_converter("path", Path)
-            connection.execute(f"ATTACH DATABASE ? AS main", (self.path,))
         return connection
 
     @staticmethod
