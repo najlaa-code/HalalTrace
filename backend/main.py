@@ -1,3 +1,8 @@
+"""
+FastAPI entry point for the cycle-based HalalTrace backend, should be
+good now?? Insh'Allah
+"""
+
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Callable
@@ -40,16 +45,15 @@ from backend.schemas import (
 
 Predictor = Callable[[list[MLReading]], PredictionOutput]
 
-
 def _cycle_http_error(exc: CycleError) -> HTTPException:
     if isinstance(exc, CycleNotFoundError):
-        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        return HTTPException(status_code=404, detail=str(exc))
+
     if isinstance(exc, (CycleConflictError, InvalidCycleStateError)):
-        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
-    return HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Unexpected cycle state error.",
-    )
+        return HTTPException(status_code=409, detail=str(exc))
+    
+    #This should genuinely only happen if a new CycleError subclass is added
+    return HTTPException(status_code=500, detail="Unexpected cycle state error.")
 
 
 def _verdict_message(receipt: AuditReceipt) -> VerdictMessage:
@@ -69,25 +73,27 @@ def create_app(
     cycle_manager: CycleManager | None = None,
     predictor: Predictor | None = None,
 ) -> FastAPI:
-    """Create an app whose dependencies can be replaced safely in tests."""
-    audit_database = database or AuditDatabase(app_settings.database_path)
-    manager = cycle_manager or CycleManager()
+    db = database or AuditDatabase(app_settings.database_path)
+    cycles = cycle_manager or CycleManager()
+
     prediction_service = PredictionService(use_stub=app_settings.use_ml_stub)
-    prediction_function = predictor or prediction_service.predict
+    predict = predictor or prediction_service.predict
     broadcaster = DashboardBroadcaster()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        audit_database.initialize()
+        #Delay this until startup so importing the mod uelr doesnt create files
+        db.initialize()
         yield
 
-    application = FastAPI(
+    api = FastAPI(
         title=app_settings.app_name,
         version=app_settings.app_version,
-        description="Cycle-based cleaning verification backend for HalalTrace.",
+        description="Cleaning-cycle verification API for HalalTrace.",
         lifespan=lifespan,
     )
-    application.add_middleware(
+
+    api.add_middleware(
         CORSMiddleware,
         allow_origins=list(app_settings.frontend_origins),
         allow_credentials=True,
@@ -95,33 +101,33 @@ def create_app(
         allow_headers=["Content-Type"],
     )
 
-    application.state.settings = app_settings
-    application.state.database = audit_database
-    application.state.cycle_manager = manager
-    application.state.predictor = prediction_function
-    application.state.broadcaster = broadcaster
+    api.state.settings = api
+    api.state.database = db
+    api.state.cycle_manager = cycles
+    api.state.predictor = predict
+    api.state.broadcaster = broadcaster
 
-    @application.get("/health", response_model=HealthResponse, tags=["system"])
+    @api.get("/health", response_model=HealthResponse, tags=["system"])
     async def health() -> HealthResponse:
         model_mode = "development_stub" if app_settings.use_ml_stub else "real"
         return HealthResponse(status="ok", model_mode=model_mode)
 
-    @application.post(
+    @api.post(
         "/api/line/{line_id}/cycle/start",
-        response_model=CycleStateMessage,
+        response_model=CycleStateMessage, 
         status_code=status.HTTP_201_CREATED,
         tags=["cycles"],
     )
     async def start_cycle(
         line_id: Identifier, request: CycleStartRequest
     ) -> CycleStateMessage:
-        if audit_database.get_receipt(request.cycle_id) is not None:
+        if db.get_receipt(request.cycle_id) is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Cycle id {request.cycle_id!r} already has an audit receipt.",
             )
         try:
-            manager.start_cycle(line_id, request.cycle_id)
+            cycles.start_cycle(line_id, request.cycle_id)
         except CycleError as exc:
             raise _cycle_http_error(exc) from exc
 
@@ -133,7 +139,7 @@ def create_app(
         await broadcaster.broadcast(message)
         return message
 
-    @application.post(
+    @api.post(
         "/api/line/{line_id}/reading",
         response_model=ReadingMessage,
         status_code=status.HTTP_202_ACCEPTED,
@@ -148,7 +154,7 @@ def create_app(
             temp_c=request.temp_c,
         )
         try:
-            manager.add_reading(line_id, request.cycle_id, reading)
+            cycles.add_reading(line_id, request.cycle_id, reading)
         except CycleError as exc:
             raise _cycle_http_error(exc) from exc
 
@@ -162,7 +168,7 @@ def create_app(
         await broadcaster.broadcast(message)
         return message
 
-    @application.post(
+    @api.post(
         "/api/line/{line_id}/cycle/end",
         response_model=VerdictMessage,
         tags=["cycles"],
@@ -170,7 +176,7 @@ def create_app(
     async def end_cycle(
         line_id: Identifier, request: CycleEndRequest
     ) -> VerdictMessage:
-        existing_receipt = audit_database.get_receipt(request.cycle_id)
+        existing_receipt = db.get_receipt(request.cycle_id)
         if existing_receipt is not None:
             if existing_receipt.line_id != line_id:
                 raise HTTPException(
@@ -180,7 +186,7 @@ def create_app(
             return _verdict_message(existing_receipt)
 
         try:
-            cycle = manager.begin_verification(line_id, request.cycle_id)
+            cycle = cycles.begin_verification(line_id, request.cycle_id)
         except CycleError as exc:
             raise _cycle_http_error(exc) from exc
 
@@ -195,15 +201,15 @@ def create_app(
         readings = list(cycle.readings)
         ended_at = datetime.now(timezone.utc)
         try:
-            prediction = await run_in_threadpool(prediction_function, readings)
+            prediction = await run_in_threadpool(predict, readings)
         except (PredictionUnavailableError, InvalidPredictionError) as exc:
-            manager.verification_failed(line_id, request.cycle_id)
+            cycles.verification_failed(line_id, request.cycle_id)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(exc),
             ) from exc
         except Exception as exc:
-            manager.verification_failed(line_id, request.cycle_id)
+            cycles.verification_failed(line_id, request.cycle_id)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="The cycle could not be evaluated.",
@@ -224,30 +230,30 @@ def create_app(
             model_mode=("development_stub" if prediction.development_stub else "real"),
         )
         try:
-            audit_database.insert_receipt(receipt)
+            db.insert_receipt(receipt)
         except DuplicateReceiptError:
-            stored_receipt = audit_database.get_receipt(request.cycle_id)
+            stored_receipt = db.get_receipt(request.cycle_id)
             if stored_receipt is None:
-                manager.verification_failed(line_id, request.cycle_id)
+                cycles.verification_failed(line_id, request.cycle_id)
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="The cycle receipt could not be stored uniquely.",
                 )
             if stored_receipt.line_id != line_id:
-                manager.verification_failed(line_id, request.cycle_id)
+                cycles.verification_failed(line_id, request.cycle_id)
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Cycle id {request.cycle_id!r} belongs to another line.",
                 )
             receipt = stored_receipt
         except Exception as exc:
-            manager.verification_failed(line_id, request.cycle_id)
+            cycles.verification_failed(line_id, request.cycle_id)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="The cycle was evaluated but its audit receipt could not be stored.",
             ) from exc
 
-        manager.complete_cycle(line_id, request.cycle_id)
+        cycles.complete_cycle(line_id, request.cycle_id)
         final_state = (
             CycleState.PASSED
             if receipt.verdict.value == "PASS"
@@ -264,20 +270,20 @@ def create_app(
         await broadcaster.broadcast(verdict_message)
         return verdict_message
 
-    @application.get(
+    @api.get(
         "/api/audit-log", response_model=list[AuditSummary], tags=["audit"]
     )
     async def audit_log(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[AuditSummary]:
-        return audit_database.list_receipts(limit=limit, offset=offset)
+        return db.list_receipts(limit=limit, offset=offset)
 
-    @application.get(
+    @api.get(
         "/api/cycle/{cycle_id}", response_model=AuditReceipt, tags=["audit"]
     )
     async def get_cycle(cycle_id: Identifier) -> AuditReceipt:
-        receipt = audit_database.get_receipt(cycle_id)
+        receipt = db.get_receipt(cycle_id)
         if receipt is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -285,7 +291,7 @@ def create_app(
             )
         return receipt
 
-    @application.websocket("/ws/dashboard")
+    @api.websocket("/ws/dashboard")
     async def dashboard_socket(websocket: WebSocket) -> None:
         await broadcaster.connect(websocket)
         try:
@@ -296,7 +302,7 @@ def create_app(
         finally:
             await broadcaster.disconnect(websocket)
 
-    return application
+    return api
 
 
 app = create_app()
