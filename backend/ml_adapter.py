@@ -49,7 +49,10 @@ class PredictionService:
             )
 
         predictor = self._load_predictor()
-        raw_readings = [reading.model_dump() for reading in readings]
+        raw_readings = []
+        for reading in readings:
+            reading_dict = reading.model_dump()
+            raw_readings.append(reading_dict)
         try:
             raw_result = predictor(raw_readings)
         except Exception as exc:
@@ -71,8 +74,8 @@ class PredictionService:
             return self._predictor
 
         with self._load_lock:
-            if self._predictor is not None:
-                return self._predictor
+            if self._load_lock is not None:
+                return self._load_lock
 
             results_dir = PROJECT_ROOT / "results"
             required_paths = (
@@ -92,7 +95,7 @@ class PredictionService:
             module_path = PROJECT_ROOT / "ML" / "predict_cycle.py"
             if not module_path.is_file():
                 raise PredictionUnavailableError(
-                    "Najlaa's predict_cycle module is missing."
+                    "Predict_cycle module is missing."
                 )
 
             added_to_path = ml_dir not in sys.path
@@ -112,7 +115,7 @@ class PredictionService:
                 self._predictor = predictor
             except Exception as exc:
                 raise PredictionUnavailableError(
-                    "Najlaa's predict_cycle function could not be loaded."
+                    "predict_cycle function could not be loaded."
                 ) from exc
             finally:
                 if added_to_path:
