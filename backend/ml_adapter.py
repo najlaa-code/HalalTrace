@@ -74,8 +74,8 @@ class PredictionService:
             return self._predictor
 
         with self._load_lock:
-            if self._load_lock is not None:
-                return self._load_lock
+            if self._predictor is not None:
+                return self._predictor
 
             results_dir = PROJECT_ROOT / "results"
             required_paths = (
