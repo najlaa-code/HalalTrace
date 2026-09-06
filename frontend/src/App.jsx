@@ -7,6 +7,7 @@ import { CONFIG, TIERS, flagDotColor } from "./config";
 import { SEED, NOW0, H, genCycleHist } from "./seed";
 import { CSS } from "./styles";
 import { createMockBackend } from "./mockBackend";
+import { createRealBackend } from "./realBackend";
 import {
   CYCLE_STATES,
   CYCLE_STATE_LABELS,
@@ -172,6 +173,7 @@ export default function HalalTraceDashboard() {
 
   const [selected, setSelected] = useState("line_A");
   const [clock, setClock] = useState(Date.now());
+  const [mode, setMode] = useState("demo"); // "demo" | "live"
   const backend = useRef(null);
 
   function handleMessage(msg) {
@@ -257,15 +259,25 @@ export default function HalalTraceDashboard() {
   }
 
   useEffect(() => {
-    const mock = createMockBackend(handleMessage);
-    mock.start();
-    backend.current = mock;
     const clock_t = setInterval(() => setClock(Date.now()), 1000);
-    return () => {
-      mock.stop();
-      clearInterval(clock_t);
-    };
+    return () => clearInterval(clock_t);
   }, []);
+
+  useEffect(() => {
+    // Reset to a blank slate on every mode switch so stale demo data (or a
+    // stale live reading) doesn't linger under the other mode.
+    setSensors(() => {
+      const o = {};
+      for (const s of SEED) o[s.id] = blankSensor(s.id);
+      return o;
+    });
+
+    const client =
+      mode === "live" ? createRealBackend(handleMessage) : createMockBackend(handleMessage);
+    client.start();
+    backend.current = client;
+    return () => client.stop();
+  }, [mode]);
 
   const sel = sensors[selected] ?? blankSensor(selected);
   const stage =
@@ -335,9 +347,25 @@ export default function HalalTraceDashboard() {
           </div>
         </div>
         <div className="status-bar">
+          <div className="mode-toggle" role="group" aria-label="Data source">
+            <button
+              type="button"
+              className={"mode-btn" + (mode === "demo" ? " active" : "")}
+              onClick={() => setMode("demo")}
+            >
+              Demo
+            </button>
+            <button
+              type="button"
+              className={"mode-btn" + (mode === "live" ? " active" : "")}
+              onClick={() => setMode("live")}
+            >
+              Live hardware
+            </button>
+          </div>
           <span className="status-live">
             <Radio size={13} className="pulse" aria-hidden="true" />
-            Live demo
+            {mode === "live" ? "Live hardware" : "Live demo"}
           </span>
           <FlagDots count={sel.flagsInWindow} />
           <span className="live-clock">{new Date(clock).toLocaleTimeString()}</span>
@@ -477,16 +505,18 @@ export default function HalalTraceDashboard() {
                 Cycle total {cycleElapsedMin.toFixed(1)} min · bar is this stage
                 only. At 100% cleaning ends and verification starts — not PASS.
               </p>
-              <div className="demo">
-                <span className="demo-tag">Try it</span>
-                <button
-                  type="button"
-                  className="demo-btn"
-                  onClick={() => backend.current?.inject(selected)}
-                >
-                  <Droplets size={15} aria-hidden="true" /> Spike a dirty rinse
-                </button>
-              </div>
+              {mode === "demo" && (
+                <div className="demo">
+                  <span className="demo-tag">Try it</span>
+                  <button
+                    type="button"
+                    className="demo-btn"
+                    onClick={() => backend.current?.inject(selected)}
+                  >
+                    <Droplets size={15} aria-hidden="true" /> Spike a dirty rinse
+                  </button>
+                </div>
+              )}
             </div>
           </section>
 
