@@ -57,6 +57,14 @@ export const CSS = `
   display:inline-flex;align-items:center;gap:6px;
   padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.65);border:1px solid var(--line);
 }
+.mode-toggle{
+  display:inline-flex;border-radius:8px;background:rgba(255,255,255,.65);border:1px solid var(--line);overflow:hidden;
+}
+.mode-btn{
+  font:inherit;font-weight:600;font-size:.86rem;color:var(--ink-soft);
+  background:transparent;border:none;padding:6px 12px;cursor:pointer;
+}
+.mode-btn.active{background:var(--accent);color:#fff;}
 .live-clock{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600;}
 .muted{color:var(--ink-soft);font-weight:500;}
 .pulse{color:var(--ok);animation:pulse 1.8s ease-in-out infinite;}
